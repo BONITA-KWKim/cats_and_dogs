@@ -9,9 +9,10 @@
     the command line as such:
 
     python3 cats_and_dogs.py train --dataset dataset/image --weights coco ₩
-    --logs reulst/logs --layer all --epochs 2
+    --logs reulst/logs --layer all --epochs 1
 
-    python3 cats_and_dogs.py detect --dataset dataset/image --weights coco ₩
+    python3 cats_and_dogs.py detect --dataset dataset/image \
+    --weights pre-trained/mask_rcnn_catsanddogs_0002.h5 \
     --subset test
 """
 
@@ -27,6 +28,7 @@ import cv2
 import json
 import skimage.draw
 
+from tqdm import tqdm
 from os import listdir
 from os.path import isfile, join
 
@@ -101,58 +103,71 @@ class CustomDataset(utils.Dataset):
         # Train or validation dataset
         assert subset in ["train", "val", "test"]
         image_dir = os.path.join(dataset_dir, subset)
+    
+        if 'test' == subset:
+            iamges = [f for f in listdir(image_dir) if f.endswith(".jpg")]
         
-        # load annotation
-        dataset_json = [f for f in listdir(image_dir) if f.endswith(".json")]
-        
-        for item in dataset_json:
-            #annotation = json.load(open(os.path.join(image_dir, item)))
-            print("D, json path: {}".format(open(os.path.join(image_dir, item))))
-            raw = json.load(open(os.path.join(image_dir, item)))
-            if type(raw) is list:
-                if 0 < len(raw):
-                    annotation = raw[0]
-                else:
+            for item in tqdm(iamges):
+                image_path = os.path.join(image_dir, item)
+                image = skimage.io.imread(image_path)
+                height, width = image.shape[:2]
+                
+                # use file name as a unique image id
+                self.add_image(source_name,
+                            image_id=item,
+                            path=image_path,
+                            width=width, height=height)
+        else:
+            # load annotation
+            dataset_json = [f for f in listdir(image_dir) if f.endswith(".json")]
+            
+            for item in tqdm(dataset_json):
+            #for item in dataset_json:
+                raw = json.load(open(os.path.join(image_dir, item)))
+                if type(raw) is list:
+                    if 0 < len(raw):
+                        annotation = raw[0]
+                    else:
+                        continue
+            
+                if annotation['geometry']['type'] != 'Polygon':
                     continue
-        
-            if annotation['geometry']['type'] != 'Polygon':
-                continue
-            
-            if type(annotation['geometry']['coordinates']) is not list:
-                print("Error:", annotation)
-                continue
-            
-            all_point_x = []
-            all_point_y = []
-            for a in annotation['geometry']['coordinates'][0]:
-                all_point_x.append(int(a[0]))
-                all_point_y.append(int(a[1]))
-            
-            polygons = {}
-            polygons["all_points_x"] = all_point_x
-            polygons["all_points_y"] = all_point_y
-            kind = annotation["properties"]["classification"]["name"]
-            # validation
-            if not kind in classes:
-                continue
+                
+                if type(annotation['geometry']['coordinates']) is not list:
+                    print("Error:", annotation)
+                    continue
+                
+                all_point_x = []
+                all_point_y = []
+                for a in annotation['geometry']['coordinates'][0]:
+                    all_point_x.append(int(a[0]))
+                    all_point_y.append(int(a[1]))
+                
+                polygons = {}
+                polygons["all_points_x"] = all_point_x
+                polygons["all_points_y"] = all_point_y
+                kind = annotation["properties"]["classification"]["name"]
+                # validation
+                if not kind in classes:
+                    continue
 
-            # load_mask() needs the image size to convert polygons to masks.
-            # Unfortunately, VIA doesn't include it in JSON, so we must
-            # read the image. This is only managable since the dataset is
-            # tiny.
-            image_file = os.path.splitext(item)[0] + '.jpg'
-            image_path = os.path.join(image_dir, image_file)
-            if False == os.path.exists(image_path):
-                continue
-            image = skimage.io.imread(image_path)
-            height, width = image.shape[:2]
-            
-            # use file name as a unique image id
-            self.add_image(source_name,
-                           image_id=image_file,
-                           path=image_path,
-                           width=width, height=height,
-                           polygons=polygons, type=kind)
+                # load_mask() needs the image size to convert polygons to masks.
+                # Unfortunately, VIA doesn't include it in JSON, so we must
+                # read the image. This is only managable since the dataset is
+                # tiny.
+                image_file = os.path.splitext(item)[0] + '.jpg'
+                image_path = os.path.join(image_dir, image_file)
+                if False == os.path.exists(image_path):
+                    continue
+                image = skimage.io.imread(image_path)
+                height, width = image.shape[:2]
+                
+                # use file name as a unique image id
+                self.add_image(source_name,
+                            image_id=image_file,
+                            path=image_path,
+                            width=width, height=height,
+                            polygons=polygons, type=kind)
 
 
     def load_mask(self, image_id):
@@ -194,17 +209,19 @@ class CustomDataset(utils.Dataset):
 ############################################################
 #  Training
 ############################################################
-def train(model):
+def train(model, dataset_dir):
     """Train the model."""
     # Training dataset.
     dataset_train = CustomDataset()
-    dataset_train.load_custom_data(args.dataset, "train")
+    dataset_train.load_custom_data(dataset_dir, "train")
     dataset_train.prepare()
     
     # Validation dataset
     dataset_val = CustomDataset()
-    dataset_val.load_custom_data(args.dataset, "val")
+    dataset_val.load_custom_data(dataset_dir, "val")
     dataset_val.prepare()
+
+    # exit(0)
 
     model.train(dataset_train, dataset_val,
                 learning_rate=config.LEARNING_RATE,
@@ -244,11 +261,12 @@ def detect(model, dataset_dir, subset):
     dataset.load_custom_data(dataset_dir, subset)
     dataset.prepare()
     
-    exit(0)
-    
+    # exit(0)
+
     # Load over images
     submission = []
-    for image_id in dataset.image_ids:
+    for image_id in tqdm(dataset.image_ids):
+    # for image_id in dataset.image_ids:
         # Load image and run detection
         image = dataset.load_image(image_id)
         # Detect objects
@@ -274,7 +292,7 @@ def detect(model, dataset_dir, subset):
     file_path = os.path.join(submit_dir, "submit.csv")
     with open(file_path, "w") as f:
         f.write(submission)
-    print("\n** Result Report Directory : ", submit_dir)
+    print("** Result Report Directory : ", submit_dir)
 
 ############################################################
 #  Command Line
@@ -322,7 +340,7 @@ if __name__ == '__main__':
         config = CustomConfig()
     else:
         config = CustomInferenceConfig()
-        config.display()
+    config.display()
 
     # Create model
     if args.command == "train":
@@ -359,10 +377,9 @@ if __name__ == '__main__':
 
     # Train or evaluate
     if args.command == "train":
-        train(model)
+        train(model, args.dataset)
     elif args.command == "detect":
         detect(model, args.dataset, args.subset)
     else:
         print("'{}' is not recognized. "
         "Use 'train' or 'detect'".format(args.command))
-
